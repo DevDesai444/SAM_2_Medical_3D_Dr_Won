@@ -58,9 +58,45 @@ def get_connected_components(mask):
     - counts: A tensor of shape (N, 1, H, W) containing the area of the connected
               components for foreground pixels and 0 for background pixels.
     """
-    from sam2 import _C
+    # from sam2 import _C
 
-    return _C.get_connected_componnets(mask.to(torch.uint8).contiguous())
+    # return _C.get_connected_componnets(mask.to(torch.uint8).contiguous())
+    try:
+        from sam2 import _C
+        return _C.get_connected_componnets(mask.to(torch.uint8).contiguous())
+    except (ImportError, AttributeError):
+        # Fallback to CPU implementation using scipy or cv2
+        import warnings
+        warnings.warn(
+            "CUDA extension 'sam2._C' not available. Using CPU fallback for connected components. "
+            "This may be slower.",
+            UserWarning,
+            stacklevel=2
+        )
+        
+        # CPU fallback using scipy.ndimage
+        from scipy import ndimage
+        
+        mask_np = mask.to(torch.uint8).cpu().numpy()
+        N, C, H, W = mask_np.shape
+        labels = np.zeros_like(mask_np, dtype=np.int32)
+        counts = np.zeros_like(mask_np, dtype=np.int32)
+        
+        for n in range(N):
+            for c in range(C):
+                binary_mask = mask_np[n, c, :, :]
+                label_array, num_features = ndimage.label(binary_mask, structure=np.ones((3, 3)))
+                labels[n, c, :, :] = label_array
+                
+                # Calculate counts (areas) for each component
+                unique_labels, counts_per_label = np.unique(label_array, return_counts=True)
+                count_array = np.zeros_like(label_array, dtype=np.int32)
+                for lbl, cnt in zip(unique_labels, counts_per_label):
+                    if lbl > 0:  # Skip background (label 0)
+                        count_array[label_array == lbl] = cnt
+                counts[n, c, :, :] = count_array
+        
+        return torch.from_numpy(labels).to(mask.device), torch.from_numpy(counts).to(mask.device)
 
 
 def mask_to_box(masks: torch.Tensor):
@@ -74,7 +110,7 @@ def mask_to_box(masks: torch.Tensor):
     - box_coords: [B, 1, 4], contains (x, y) coordinates of top left and bottom right box corners, dtype=torch.Tensor
     """
     B, _, h, w = masks.shape
-    device = masks.device
+    device = "cpu"
     xs = torch.arange(w, device=device, dtype=torch.int32)
     ys = torch.arange(h, device=device, dtype=torch.int32)
     grid_xs, grid_ys = torch.meshgrid(xs, ys, indexing="xy")
@@ -109,7 +145,7 @@ class AsyncVideoFrameLoader:
     def __init__(self, img_paths, image_size, offload_video_to_cpu, img_mean, img_std):
         self.img_paths = img_paths
         self.image_size = image_size
-        self.offload_video_to_cpu = offload_video_to_cpu
+        self.offload_video_to_cpu = True
         self.img_mean = img_mean
         self.img_std = img_std
         # items in `self._images` will be loaded asynchronously
@@ -163,7 +199,7 @@ class AsyncVideoFrameLoader:
 def load_video_frames(
     video_path,
     image_size,
-    offload_video_to_cpu,
+    offload_video_to_cpu = True,
     img_mean=(0.485, 0.456, 0.406),
     img_std=(0.229, 0.224, 0.225),
     async_loading_frames=False,
@@ -176,6 +212,7 @@ def load_video_frames(
 
     You can load a frame asynchronously by setting `async_loading_frames` to `True`.
     """
+    offload_video_to_cpu = True
     if isinstance(video_path, str) and os.path.isdir(video_path):
         jpg_folder = video_path
     else:
@@ -204,9 +241,11 @@ def load_video_frames(
     for n, img_path in enumerate(tqdm(img_paths, desc="frame loading (JPEG)")):
         images[n], video_height, video_width = _load_img_as_tensor(img_path, image_size)
     if not offload_video_to_cpu:
-        images = images.cuda()
-        img_mean = img_mean.cuda()
-        img_std = img_std.cuda()
+        # Use CUDA if available, otherwise use CPU
+        device = torch.device("cpu")
+        images = images.to(device)
+        img_mean = img_mean.to(device)
+        img_std = img_std.to(device)
     # normalize by mean and std
     images -= img_mean
     images /= img_std

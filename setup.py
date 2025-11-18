@@ -42,18 +42,28 @@ EXTRA_PACKAGES = {
 
 
 def get_extensions():
-    srcs = ["sam2/csrc/connected_components.cu"]
-    compile_args = {
-        "cxx": [],
-        "nvcc": [
-            "-DCUDA_HAS_FP16=1",
-            "-D__CUDA_NO_HALF_OPERATORS__",
-            "-D__CUDA_NO_HALF_CONVERSIONS__",
-            "-D__CUDA_NO_HALF2_OPERATORS__",
-        ],
-    }
-    ext_modules = [CUDAExtension("sam2._C", srcs, extra_compile_args=compile_args)]
-    return ext_modules
+    import os
+    import torch
+    from torch.utils.cpp_extension import CUDA_HOME
+    
+    # Only build CUDA extension if CUDA is available
+    if torch.cuda.is_available() and CUDA_HOME is not None:
+        srcs = ["sam2/csrc/connected_components.cu"]
+        compile_args = {
+            "cxx": [],
+            "nvcc": [
+                "-DCUDA_HAS_FP16=1",
+                "-D__CUDA_NO_HALF_OPERATORS__",
+                "-D__CUDA_NO_HALF_CONVERSIONS__",
+                "-D__CUDA_NO_HALF2_OPERATORS__",
+            ],
+        }
+        ext_modules = [CUDAExtension("sam2._C", srcs, extra_compile_args=compile_args)]
+        return ext_modules
+    else:
+        print("WARNING: CUDA not available. Skipping CUDA extension build.")
+        print("The sam2._C module will not be available, but most functionality will still work.")
+        return []
 
 
 # Setup configuration
